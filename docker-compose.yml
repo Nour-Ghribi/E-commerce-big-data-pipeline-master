@@ -1,0 +1,222 @@
+version: "3.8"
+
+services:
+  # --- Citus Services (Unchanged) ---
+  master: # This is the Citus Master (Postgres), NOT Spark Master
+    container_name: "citus_master"
+    image: "citusdata/citus:13.0.3"
+    ports: ["${COORDINATOR_EXTERNAL_PORT:-55432}:5432"]
+    labels: ["com.citusdata.role=Master"]
+    environment: &AUTH
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      PGUSER: "${POSTGRES_USER:-postgres}"
+      PGPASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_HOST_AUTH_METHOD: "${POSTGRES_HOST_AUTH_METHOD:-trust}"
+    command: |
+      postgres
+      -c wal_level=replica
+      -c hot_standby=on
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c hot_standby_feedback=on
+    volumes:
+      - ./init.sh:/docker-entrypoint-initdb.d/init.sh
+    networks: # Add network definition
+      - cluster-net
+
+  worker: # This is the Citus Worker (Postgres), NOT Spark Worker
+    image: "citusdata/citus:13.0.3"
+    labels: ["com.citusdata.role=Worker"]
+    depends_on: [manager]
+    environment: *AUTH
+    command: "/wait-for-manager.sh"
+    volumes:
+      - healthcheck-volume:/healthcheck
+    networks: # Add network definition
+      - cluster-net
+
+  manager: # Citus Manager
+    container_name: "citus_manager"
+    image: "citusdata/membership-manager:0.3.0"
+    volumes:
+      - "${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock"
+      - healthcheck-volume:/healthcheck
+    depends_on: [master]
+    environment: *AUTH
+    networks: # Add network definition
+      - cluster-net
+
+  postgres_replica: # Citus Standby
+    container_name: "citus_standby"
+    image: "citusdata/citus:13.0.3"
+    ports:
+      - 55433:5432
+    labels: ["com.citusdata.role=Standby"]
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      PGUSER: replicationuser
+      PGPASSWORD: password
+      POSTGRES_HOST_AUTH_METHOD: "${POSTGRES_HOST_AUTH_METHOD:-trust}"
+    command: |
+      bash -c "
+      mkdir /tmp/replica_data
+      rm -rf /tmp/replica_data
+      until pg_basebackup --pgdata=/tmp/replica_data -R --slot=replication_slot --host=master --port=5432
+      do
+        echo 'Waiting for primary to connect...'
+        sleep 1s
+      done
+      echo 'Backup done, starting replica...'
+      chown -R postgres:postgres /tmp/replica_data
+      chmod 0644 /tmp/replica_data/postgresql.conf
+      su postgres -c 'postgres -D /tmp/replica_data'
+      "
+    depends_on:
+      - master
+    networks: # Add network definition
+      - cluster-net
+
+  # --- Spark Master Service (Reverted to Single Instance) ---
+  spark-master:
+    image: bde2020/spark-master:3.3.0-hadoop3.3
+    container_name: spark-master
+    hostname: spark-master
+    ports:
+      - "8080:8080" # Web UI for Master
+    environment:
+      INIT_DAEMON_STEP: setup_spark # Keep existing env vars
+      SPARK_MASTER_WEBUI_PORT: "8080" # Explicitly set default UI port
+      SPARK_HOME: /spark
+      PATH: /spark/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    depends_on:
+      - namenode
+    volumes:
+      - spark_master_logs:/opt/spark/logs # Optional: Persist logs
+    networks: # Add network definition
+      - cluster-net
+
+  # --- Spark Worker Service (Reverted to Single Master) ---
+  spark-worker: # Renamed for clarity if scaling later
+    image: bde2020/spark-worker:3.3.0-hadoop3.3
+    expose:
+      - "8081"  # Worker Web UI port
+      - "7078"  # Worker port
+    depends_on:
+      - spark-master
+      - namenode
+    environment:
+      # --- Crucial Change: Point to the single master ---
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_WORKER_WEBUI_PORT=8081 # Ensure worker UI is enabled
+      # You might want to configure cores/memory via SPARK_WORKER_CORES, SPARK_WORKER_MEMORY
+      # Example:
+      # - SPARK_WORKER_CORES=1
+      # - SPARK_WORKER_MEMORY=2G
+    mem_limit: 2g # Keep existing resource limits if desired
+    cpus: 1.0 # Keep existing resource limits if desired
+    volumes:
+      - spark_worker_logs:/opt/spark/logs # Optional: Persist logs
+    networks: # Add network definition
+      - cluster-net
+
+# ------------------------ HADOOP Config ---------------------
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    restart: always
+    ports:
+      - 9870:9870
+      - 9000:9000
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+    environment:
+      - CLUSTER_NAME=test
+    env_file:
+      - ./hadoop.env
+    networks: # Add network definition
+      - cluster-net
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    restart: always
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    env_file:
+      - ./hadoop.env
+    networks: # Add network definition
+      - cluster-net
+  datanode2:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode2
+    restart: always
+    volumes:
+      - hadoop_datanode2:/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    env_file:
+      - ./hadoop.env
+    networks: # Add network definition
+      - cluster-net
+  datanode3:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode3
+    restart: always
+    volumes:
+      - hadoop_datanode3:/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    env_file:
+      - ./hadoop.env
+    networks: # Add network definition
+      - cluster-net
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    container_name: resourcemanager
+    restart: always
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864"
+    env_file:
+      - ./hadoop.env
+    networks: # Add network definition
+      - cluster-net
+  nodemanager1:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    container_name: nodemanager
+    restart: always
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+    env_file:
+      - ./hadoop.env
+    networks: # Add network definition
+      - cluster-net
+  historyserver:
+    image: bde2020/hadoop-historyserver:2.0.0-hadoop3.2.1-java8
+    container_name: historyserver
+    restart: always
+    environment:
+      SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+    volumes:
+      - hadoop_historyserver:/hadoop/yarn/timeline
+    env_file:
+      - ./hadoop.env
+    networks: # Add network definition
+      - cluster-net      
+# Define shared network
+networks:
+  cluster-net:
+    driver: bridge
+
+# Define volumes for persistence (optional)
+volumes:
+  healthcheck-volume:
+  hadoop_namenode:
+  hadoop_datanode:
+  hadoop_datanode2:
+  hadoop_datanode3:
+  hadoop_historyserver:
+  spark_master_logs: # Added volume for Master logs
+  spark_worker_logs: # Added volume for Worker logs

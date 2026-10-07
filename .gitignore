@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Local environments
+.env
+.venv/
+venv/
+
+# Data and generated artifacts
+Data/
+data/
+*.csv
+*.jsonl
+*.parquet
+*.orc
+*.avro
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
