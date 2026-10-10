@@ -1,182 +1,149 @@
-# E-commerce Big Data Pipeline
+<div align="center">
 
-A complete Big Data analytics pipeline for processing e-commerce event data with Hadoop, Spark, Citus/PostgreSQL, and Power BI.
+# 🛒 E-commerce Big Data Pipeline
 
-The project shows how raw product interaction data can be moved from distributed storage into a clean analytical warehouse model that is ready for reporting and business intelligence.
+**Batch ETL from HDFS to a distributed Citus/PostgreSQL star-schema warehouse with Spark — ready for BI dashboards.**
 
-## Overview
+![Hadoop](https://img.shields.io/badge/Hadoop_HDFS-3.2.1-f472b6?style=for-the-badge&logo=apachehadoop&logoColor=white&labelColor=0c0814)
+![Spark](https://img.shields.io/badge/Apache_Spark-3.3.0-c4b5fd?style=for-the-badge&logo=apachespark&logoColor=white&labelColor=0c0814)
+![Citus](https://img.shields.io/badge/Citus-13.0.3-a21caf?style=for-the-badge&logo=postgresql&logoColor=white&labelColor=0c0814)
+![Docker](https://img.shields.io/badge/Docker_Compose-orchestration-67e8f9?style=for-the-badge&logo=docker&logoColor=white&labelColor=0c0814)
+![Power BI](https://img.shields.io/badge/Power_BI-consumer-f472b6?style=for-the-badge&logo=powerbi&logoColor=white&labelColor=0c0814)
 
-This pipeline covers the main stages of a modern batch data engineering workflow:
+</div>
 
-1. Store raw e-commerce files in HDFS.
-2. Process and clean the data with Apache Spark.
-3. Build analytical dimension and fact tables.
-4. Load the curated data into Citus/PostgreSQL.
-5. Connect Power BI to create dashboards and insights.
+---
 
-## Architecture
+## 📌 Overview
 
-```text
-Local dataset
-    |
-    v
-Dockerized Hadoop / HDFS
-    |
-    v
-Apache Spark ETL
-    |
-    v
-Citus / PostgreSQL warehouse
-    |
-    v
-Power BI dashboards
+This project shows an end-to-end **batch data-engineering workflow** for e-commerce event data (views, carts, purchases): raw Parquet files are stored in **HDFS**, cleaned and modelled by an **Apache Spark** job, and loaded through JDBC into a **Citus** (distributed PostgreSQL) warehouse. The curated tables can then be explored from Power BI.
+
+Everything runs locally with Docker Compose: a Hadoop cluster, a Spark standalone cluster and a Citus cluster with a standby replica.
+
+## 🧭 Architecture
+
+```mermaid
+flowchart LR
+    A[(Local Parquet dataset<br/>./Data)] -->|docker cp + hdfs put| B[HDFS<br/>namenode + 3 datanodes]
+    B --> C[Spark cluster<br/>1 master · 3 workers<br/>sparkcode.py]
+    C -->|clean · dedupe · model| D{{Star schema}}
+    D -->|JDBC overwrite| E[(Citus coordinator<br/>+ 3 workers · standby replica)]
+    E --> F[Power BI]
 ```
 
-## Tech Stack
+| Layer | Image / tool |
+|---|---|
+| Storage | `bde2020/hadoop-namenode` + 3 × `hadoop-datanode` (Hadoop 3.2.1), YARN resourcemanager / nodemanager, history server |
+| Processing | `bde2020/spark-master` + `spark-worker` (Spark 3.3.0, scaled to 3 workers) |
+| Warehouse | `citusdata/citus:13.0.3` coordinator, 3 workers, membership manager, streaming-replication standby |
 
-- Docker and Docker Compose for local orchestration
-- Hadoop HDFS for distributed storage
-- Apache Spark for ETL and transformation
-- CitusData PostgreSQL for distributed warehousing
-- Power BI for visualization
+## 🧱 Data Model
 
-## Data Model
+[`sparkcode.py`](./sparkcode.py) builds a star schema with surrogate keys (`monotonically_increasing_id`):
 
-The Spark job creates a simple star-schema style model:
-
-| Table | Description |
-| --- | --- |
-| `dim_product` | Product, category, and brand information |
-| `dim_user` | Unique users |
-| `dim_category` | Category metadata |
-| `fact_events` | Cleaned user events linked to dimensions |
-
-## ETL Steps
-
-The ETL script performs:
-
-- removal of null rows
-- whitespace trimming
-- duplicate removal
-- column normalization to lowercase snake case
-- non-ASCII character cleanup
-- date formatting
-- dimension table generation
-- fact table generation with foreign keys
-- JDBC loading into PostgreSQL/Citus
-
-## Project Structure
-
-```text
-.
-|-- docker-compose.yml   # Hadoop, Spark and Citus services
-|-- hadoop.env           # Hadoop environment configuration
-|-- init.sh              # Citus/PostgreSQL replication initialization
-|-- sparkcode.py         # Spark ETL job
-|-- start.sh             # End-to-end pipeline launcher
-`-- README.md
+```mermaid
+erDiagram
+    fact_events }o--|| dim_product : product_sk
+    fact_events }o--|| dim_user : user_sk
+    fact_events }o--|| dim_category : category_sk
+    fact_events {
+        string event_time
+        string event_type
+        long product_sk
+        long user_sk
+        long category_sk
+        double price
+        string user_session
+    }
+    dim_product {
+        long product_sk
+        string product_id
+        string category_id
+        string category_code
+        string brand
+    }
+    dim_user {
+        long user_sk
+        string user_id
+    }
+    dim_category {
+        long category_sk
+        string category_id
+        string category_code
+    }
 ```
 
-## Prerequisites
+## 🔧 ETL Steps
 
-- Docker
-- Docker Compose
-- A local e-commerce dataset in Parquet format
+1. Read Parquet from `hdfs://namenode:9000/user/root/nader/data/tmpdata/*.parquet`.
+2. Drop rows with nulls, trim string columns, remove duplicates.
+3. Normalise column names to `lower_snake_case`; strip non-ASCII characters; unify dates to `yyyy-MM-dd`.
+4. Build `dim_product`, `dim_user`, `dim_category` and the `fact_events` table with foreign keys.
+5. Write the four tables to Citus over JDBC (`mode("overwrite")`).
 
-By default, `start.sh` expects the dataset in a local `Data` directory:
+## 🗂️ Expected Input
 
-```text
-./Data/
-```
+> ⚠️ **Dataset not documented.** This repository does not name, ship or license the dataset it was built for. Use a dataset you are allowed to use, and check its licence before redistributing any data or derived tables.
 
-If your dataset is stored elsewhere, pass its path with `DATA_DIR`:
+A local folder of Parquet files with (at least) these columns: `event_time, event_type, product_id, category_id, category_code, brand, price, user_id, user_session`.
 
-```bash
-DATA_DIR=/path/to/your/Data ./start.sh
-```
+<!-- CONFIRM: dataset name/source. The schema matches the public "eCommerce behavior data from multi-category store" dataset (REES46 / Kaggle) — please confirm before citing. -->
 
-## How to Run
-
-Start the full environment and launch the ETL job:
+## 🚀 Run
 
 ```bash
 chmod +x start.sh
-./start.sh
+./start.sh                       # expects ./Data
+DATA_DIR=/path/to/Data ./start.sh
 ```
 
-The script will:
+`start.sh` starts the stack (`--scale worker=3 --scale spark-worker=3`), waits for HDFS to leave safe mode, uploads the data, installs the PostgreSQL JDBC driver in Spark and runs `spark-submit sparkcode.py`.
 
-1. start Hadoop, Spark and Citus containers
-2. wait until HDFS is ready
-3. copy the local dataset into the namenode container
-4. upload the data into HDFS
-5. install the PostgreSQL JDBC driver in Spark
-6. run `sparkcode.py`
-7. write the warehouse tables into Citus/PostgreSQL
+| Service | Address |
+|---|---|
+| HDFS Namenode UI | http://localhost:9870 |
+| Spark Master UI | http://localhost:8080 |
+| Citus coordinator | `localhost:55432` |
+| Citus standby | `localhost:55433` |
 
-## Access Points
-
-| Service | URL / Port |
-| --- | --- |
-| Hadoop Namenode UI | `http://localhost:9870` |
-| Spark Master UI | `http://localhost:8080` |
-| Citus/PostgreSQL | `localhost:55432` |
-
-Database credentials used by the pipeline:
-
-```text
-User: postgres
-Password: admin
-Database: postgres
-```
-
-## Power BI Connection
-
-After the ETL process finishes:
-
-1. Open Power BI Desktop.
-2. Choose PostgreSQL as the data source.
-3. Connect using:
-
-```text
-Host: localhost
-Port: 55432
-Database: postgres
-Username: postgres
-Password: admin
-```
-
-4. Import the dimension and fact tables.
-5. Build dashboards using product, category, user and event metrics.
-
-## Useful Commands
-
-Stop all services:
+Connect Power BI (or any PostgreSQL client) to `localhost:55432`, database `postgres`, and import the four tables.
 
 ```bash
-docker compose down
+docker compose ps          # status
+docker compose down -v     # stop and remove volumes
 ```
 
-Stop services and remove volumes:
+> 🔐 **Local-lab configuration only.** `start.sh` exports `POSTGRES_PASSWORD=admin`, and `init.sh` sets `pg_hba` entries to `trust` for `0.0.0.0/0`. Do not expose these ports or reuse this setup outside a local environment; use secrets and restricted network rules in any shared deployment.
 
-```bash
-docker compose down -v
-```
+## 🔌 Power BI / BI Connection
 
-Check running containers:
+After the ETL finishes, connect Power BI Desktop (or any PostgreSQL client) to the Citus coordinator — host `localhost`, port `55432`, database `postgres`, user `postgres`, password = the value exported by `start.sh` (a lab default; change it) — and import `dim_product`, `dim_user`, `dim_category` and `fact_events`.
 
-```bash
-docker compose ps
-```
+## ✅ Verification Status
 
-## Possible Dashboard Ideas
+The Hadoop / Spark / Citus stack was **not started** here (it needs a large local Parquet dataset and several GB of images); the description comes from `docker-compose.yml`, `start.sh` and `sparkcode.py`.
 
-- event count by product category
-- top brands by interactions
-- user activity over time
-- product price distribution
-- conversion-style analysis by event type
+## 📈 Dashboard Ideas (Power BI)
 
-## Author
+Event count by category · top brands by interactions · user activity over time · price distribution · conversion-style analysis by event type (view → cart → purchase).
 
-[Nour Ghribi](https://github.com/Nour-Ghribi)
+## 🎓 What This Project Demonstrates
+
+- Distributed storage (HDFS), distributed processing (Spark) and a distributed SQL warehouse (Citus) wired together with Docker Compose.
+- Data cleaning and dimensional modelling (star schema with surrogate keys).
+- Hand-off of curated tables to a BI tool.
+
+## 📊 Results
+
+This project documents an engineering pipeline; **no performance benchmarks or dataset sizes are reported in the repository**, so none are claimed here.
+
+## 🔭 Limitations & Future Work
+
+- Full-refresh (`overwrite`) loads only — no incremental or CDC processing.
+- Surrogate keys from `monotonically_increasing_id` are not stable across runs.
+- Fact table is not explicitly distributed/co-located with Citus (`create_distributed_table`) — a natural next step.
+- Add data-quality checks, orchestration (Airflow) and automated tests; document dashboard screenshots.
+
+## 👤 Author
+
+**Nour Ghribi** · [GitHub](https://github.com/Nour-Ghribi)
