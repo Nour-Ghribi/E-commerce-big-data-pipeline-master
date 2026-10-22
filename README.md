@@ -133,16 +133,7 @@ Event count by category · top brands by interactions · user activity over time
 - Data cleaning and dimensional modelling (star schema with surrogate keys).
 - Hand-off of curated tables to a BI tool.
 
-## 📊 Results
 
-This project documents an engineering pipeline; **no performance benchmarks or dataset sizes are reported in the repository**, so none are claimed here.
-
-## 🔭 Limitations & Future Work
-
-- Full-refresh (`overwrite`) loads only — no incremental or CDC processing.
-- Surrogate keys from `monotonically_increasing_id` are not stable across runs.
-- Fact table is not explicitly distributed/co-located with Citus (`create_distributed_table`) — a natural next step.
-- Add data-quality checks, orchestration (Airflow) and automated tests; document dashboard screenshots.
 
 ## 👤 Author
 
