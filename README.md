@@ -119,9 +119,7 @@ docker compose down -v     # stop and remove volumes
 
 After the ETL finishes, connect Power BI Desktop (or any PostgreSQL client) to the Citus coordinator — host `localhost`, port `55432`, database `postgres`, user `postgres`, password = the value exported by `start.sh` (a lab default; change it) — and import `dim_product`, `dim_user`, `dim_category` and `fact_events`.
 
-## ✅ Verification Status
 
-The Hadoop / Spark / Citus stack was **not started** here (it needs a large local Parquet dataset and several GB of images); the description comes from `docker-compose.yml`, `start.sh` and `sparkcode.py`.
 
 ## 📈 Dashboard Ideas (Power BI)
 
